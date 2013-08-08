@@ -3,38 +3,46 @@ Internal test code for nova db joinload/json.
 Prerequess
 ------------
 
-To run this test, you must have a nova source code(from github master branch) installed on the machine, as well as the mysql.
+To run this test, you must have a working nova code(from github master branch) installed on the machine, as well as the mysql.
 You then have to modify the novadbtest.conf file to set correct sql_connection option for this test.
 
 Usage
 ------------
+1. Create the DB tables if hasn't been done:
 
-    python ./novadbtest.py [--num_comp  <value>] [--num_stat <value>]
+    ./novadbtest-initdb.py
+
+2. Start the nova-conductor service using the config file novadbtest.conf:
+
+    nova-conductor --config-file ./novadbtest.conf
+
+3. Start to mimic nova_compute service to create compute nodes in DB and mimic the periodic updates:
+
+    ./novadbtest-compute.py [options]
 
 Options:
 
-  --num_comp: number of compute node, default is 10000
+  --num_comp NUM_COMP           Number of compute node to be created. Default is 10000.
   
-  --num_stat: number of stat record of each compute node, default is 20.
+  --num_stat NUM_STAT           Number of stat record of each compute node, Default is 20.
+                                If join_stats is False, these stats will be stored as json
+                                encoded TEXT in the cpu_info column.
+              
+  --join_stats <True or False>  Whether to generate stats data for each compute node for DB join.
+                                Default is False.
+
+  --num_proc NUM_PROC           How many subprocess to launch to mimic the nova-compute updates.
+                                Each subprocess will update the number of num_comp/num_proc compute nodes
+                                at a periodic interval of 60/num_proc seconds.
 
 
-Test Types
-----------
+4. Test the performance of compute_node_get_all() call.
 
-There are 2 types of tests here:
+    ./novadbtest.py [options]
 
-JOINLOAD:
+Options:
 
-The JOINLOAD test first create an empty database in mysql based on the configuration in novadbtest.conf, then use nova.db.migration
-to create nova DB tables. It then creates <num_comp> records in the compute_nodes table in the database, and for each cmopute node,
-it creates <num_stat> records in the compute_node_stats table. Then it measures the time to execute nova.db.compute_node_get_all() to
-get all the compute nodes.
-
-JSON:
-
-The JSON test first create an empty database in mysql based on the configuration in novadbtest.conf, then use nova.db.migration
-to create nova DB tables. It then creates <num_comp> records in the compute_nodes table in the database. Instead of creating records
-in compute_node_stats table, it stores a json encoded python dictionary with <num_stat> entries in the 'cpu_info' field in the 
-compute_nodes table. Then it measures the time to execute nova.db.compute_node_get_all() to get all the compute nodes, as well as the
-time to json decode the 'cpu_info' field into a python dictionary.
-
+  --join_stats <True or False>  This should be the same as the one specified in novadbtest-compute.
+  
+  --total TOTAL                 Number of runs.
+    
