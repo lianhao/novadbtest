@@ -132,7 +132,7 @@ def main():
     print '# total: %d' % CONF.total
     print '# join_stats: %s' % str(CONF.join_stats)
     print '==============================='
-    print 'Average compute_node_get_all time:%f sec' % total_time / CONF.total
+    print 'Average compute_node_get_all time:%f sec' % (total_time / CONF.total)
 
 
 if __name__ == '__main__':

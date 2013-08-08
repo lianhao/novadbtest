@@ -92,7 +92,9 @@ cli_opts = [
                help='number of compute nodes'),
     cfg.IntOpt('num_stat',
                default=20,
-               help='number of stats record for each compute node'),
+               help='number of stats record for each compute node.'
+                    'If join_stats is False, these stats will be stored as json'
+                    'encoded TEXT in the cpu_info column'),
     cfg.IntOpt('periodic_fuzzy_delay',
                default=60,
                help='range of seconds to randomly delay when starting the'
@@ -100,7 +102,9 @@ cli_opts = [
                     ' (Disable by setting to 0)'),
     cfg.IntOpt('num_proc',
                default=100,
-               help='how many subprocess to launch to mimic the nova-compute updates'),
+               help='how many subprocess to launch to mimic the nova-compute updates.'
+                    'each subprocess will update num_comp/num_proc number of compute nodes'
+                    'at a periodic interval of 60/num_proc'),
     cfg.BoolOpt('join_stats',
                 default=False,
                 help='generate stats data for each compute node for DB join')
@@ -121,7 +125,7 @@ def _init_db():
     utils.execute('sh', '%s' % path)
     os.remove(path)
 
-
+'''
 class MimicComputeManger(periodic_task.PeriodicTasks):
     def __init__(self, compute_node, values):
         self.compute_node = compute_node
@@ -163,31 +167,30 @@ class MimicService(service.Service):
                                      initial_delay=initial_delay,
                                      periodic_interval_max=None)
 
-class DummyService(service.Service):
-    def start(self):
-        super(DummyService, self).start()
-        # Add a dummy thread to have wait() working
-        self.tg.add_timer(604800, lambda: None)
-                
-
 
 def mimic_compute_update(compute_node, values):
     manager = MimicComputeManger(compute_node, values)
     service = MimicService(manager)
     service.start()
     service.wait()
+'''
+
+class DummyService(service.Service):
+    def start(self):
+        super(DummyService, self).start()
+        # Add a dummy thread to have wait() working
+        self.tg.add_timer(604800, lambda: None)
 
 
 def mimic_update(group_datas, initial_delay):
     conductor_api = conductor.API()
     if initial_delay:
         eventlet.sleep(initial_delay)
-    print "length %d" % len(group_datas)
     while True:
         length = len(group_datas)
         for i in range(length):
             (compute_node, values) = group_datas[i]
-            print("update_compute id %d" % compute_node['id'])
+            LOG.info("update_compute id %d",compute_node['id'])
             ctxt = context.get_admin_context()
             if "service" in compute_node:
                     del compute_node['service']
@@ -213,6 +216,7 @@ def _get_initial_delay():
     else:
         initial_delay = 0
     return initial_delay
+
 
 def parepare_data(join_stats):
     _init_db()
@@ -312,6 +316,7 @@ def main():
     # start subprocess
     for p in procs:
         p.start()
+    print 'All %d subprocesses have been started' % CONF.num_proc
     dummy = DummyService()
     dummy.start()
     signal.signal(signal.SIGTERM, _handle_signal)
