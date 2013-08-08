@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
 # Copyright (c) 2011 X.commerce, a business unit of eBay Inc.
@@ -48,16 +49,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-
-"""
-  CLI interface for nova management.
-"""
-
-import argparse
 import os
 import sys
-import tempfile
 import time
+
+os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
+import eventlet
+eventlet.monkey_patch(os=False, thread=False)
 
 from oslo.config import cfg
 
@@ -65,28 +63,24 @@ from nova.openstack.common import gettextutils
 gettextutils.install('novadbtest')
 
 from nova import context
+from nova import config
 from nova import db
-from nova.db import migration
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
-from nova import utils
-from nova import version
-
-import sqlalchemy.engine
 
 
 CONF = cfg.CONF
-CONF.import_opt('sql_connection',
-                'nova.openstack.common.db.sqlalchemy.session')
+CONF.import_opt('connection',
+                'nova.openstack.common.db.sqlalchemy.session', group='database')
 LOG = logging.getLogger(__name__)
 
 cli_opts = [
-    cfg.IntOpt('num_comp',
-               default=10000,
-               help='number of compute nodes'),
-    cfg.IntOpt('num_stat',
-               default=20,
-               help='number of stats record for each compute node')
+    cfg.IntOpt('total',
+               default=100,
+               help='number of runs'),
+    cfg.BoolOpt('join_stats',
+                default=False,
+                help='generate stats data for each compute node for DB join')
 ]
 CONF.register_cli_opts(cli_opts)
 
@@ -99,139 +93,46 @@ def timing(f):
         return (ret, time2-time1)
     return wrap
 
-def init_conf():
-    #parse configuration file to get sql_connection
-    path = os.path.join(os.path.abspath(os.path.dirname(__file__)),
-                        'novadbtest.conf')
-    assert os.path.exists(path)
-    try:
-        CONF(sys.argv[1:],
-              project='novadbtest',
-              version=version.version_string(),
-              default_config_files=[path])
-        logging.setup("novadbtest")
-    except cfg.ConfigFilesNotFoundError:
-        cfgfile = CONF.config_file[-1] if CONF.config_file else None
-        if cfgfile and not os.access(cfgfile, os.R_OK):
-            st = os.stat(cfgfile)
-            print "Could not read %s. Re-running with sudo" % cfgfile
-            try:
-                os.execvp('sudo', ['sudo', '-u', '#%s' % st.st_uid] + sys.argv)
-            except Exception:
-                print 'sudo failed, continuing as if nothing happened'
-
-        print 'Please re-run nova-manage as root.'
-        exit(2)
-
-
-def _init_db():
-    # create DB
-    print "Starting creating DB tables"
-    url=sqlalchemy.engine.url.make_url(CONF.sql_connection)
-    fd, path = tempfile.mkstemp()
-    with os.fdopen(fd, "w") as f:
-        f.write('mysql -u%s -p%s -h%s -e "DROP DATABASE IF EXISTS %s;"\n' % (
-                 url.username, url.password, url.host, url.database))
-        f.write('mysql -u%s -p%s -h%s -e "CREATE DATABASE %s CHARACTER SET %s;"\n' % (
-                 url.username, url.password, url.host, url.database, 
-                 url.query.get('charset', 'utf8')))
-    utils.execute('sh', '%s' % path)
-    os.remove(path)
-    #create tables
-    migration.db_sync()
-    print "Finished creating DB tables"
-
-
-def _generate_stats(id_num):
-    stats = {}
-    i = 0
-    while i < CONF.num_stat:
-        key = 'key%d' % i
-        stats[key] = id_num + i
-        i = i + 1
-    return stats
-
-
-def parepare_data(use_json=False):
-    _init_db()
-    print "Starting prepare data in DB"
-    ctx = context.get_admin_context()
-    i = 0
-    while i < CONF.num_comp:
-        if CONF.num_comp >= 100 and i % (CONF.num_comp/100) == 0:
-            sys.stdout.write("prepared %d%% data\r" % (i * 100 / CONF.num_comp))
-            sys.stdout.flush()
-        svc_values = {
-            'host': 'host-%d' % i,
-            'binary': 'novadbtest',
-            'topic': 'novadbtest',
-            'report_count': 0,
-        }
-        #created service record
-        service_ref = jsonutils.to_primitive(
-                           db.service_create(ctx, svc_values))
-        LOG.info(_('Service record created for %s')
-                    % service_ref['host'])
-        #create compute node record
-        comp_values = {
-            'service_id': service_ref['id'],
-            'vcpus': i,
-            'memory_mb': i,
-            'local_gb': i,
-            'vcpus_used': i,
-            'memory_mb_used': i,
-            'local_gb_used': i,
-            'hypervisor_type': 'qemu',
-            'hypervisor_version': 1,
-            'hypervisor_hostname': 'test',
-            'free_ram_mb': i,
-            'free_disk_gb': i,
-            'current_workload': i,
-            'running_vms': i,
-            'disk_available_least': i,
-            }
-        if use_json:
-            comp_values['cpu_info'] = jsonutils.dumps(_generate_stats(i))
-        else:
-            comp_values['cpu_info'] = jsonutils.dumps('')
-            comp_values['stats'] = _generate_stats(i)
-        compute_ref = jsonutils.to_primitive(
-                        db.compute_node_create(ctx, comp_values))
-        LOG.info(_('Compute node record created for %s')
-                    % service_ref['host'])
-        i = i + 1
-    print "Finish preparing data in DB"
-
 
 @timing
-def do_get_compute_node(use_json=False):
+def do_get_compute_node(join_stats):
     ctx = context.get_admin_context()
     compute_nodes = db.compute_node_get_all(ctx)
-    if use_json:
-        for node in compute_nodes:
+    for node in compute_nodes:
+        node['cpu_info'] = jsonutils.loads(node['cpu_info'])
+        if join_stats:
             stats = node.get('stats',{})
             assert(not stats)
-            node['cpu_info'] = jsonutils.loads(node['cpu_info'])
+            
+    return len(compute_nodes)
 
 
-def test_main(use_json, desc, results):
-    print "\nStart test %s" % desc
-    parepare_data(use_json)
-    (ret, elapse_time) = do_get_compute_node(use_json)
-    print "Finish test %s in %f seconds\n" % (desc, elapse_time)
-    results[desc] = elapse_time
+def test_main(join_stats, results,total):
+    i = 0
+    total_elapse = 0
+    while i<total:       
+        (ret, elapse_time) = do_get_compute_node(join_stats)
+        i += 1
+        print "Finish round %d in  %f seconds(ret: %d)\n" % (i, elapse_time, ret)
+        total_elapse += elapse_time
+        #time.sleep(0.5)
+        eventlet.sleep(0.5)
+
+    return total_elapse
 
 def main():
-    init_conf()
-    results = {}
-    test_main(False, 'JOINLOAD', results)
-    test_main(True, 'JSON', results)
+    config.parse_args(sys.argv,['novadbtest.conf'])
+    logging.setup("novadbtest")
+    results = {'total_time': 0.0,
+               'rounds': 0
+               }
+    #test_main(False, 'JOINLOAD', results)
+    total_time = test_main(CONF.join_stats, results, CONF.total)
     print '============Summary============'
-    print '# of compute nodes: %d' % CONF.num_comp
-    print '# of stat records per compute node: %d' % CONF.num_stat
+    print '# total: %d' % CONF.total
+    print '# join_stats: %s' % str(CONF.join_stats)
     print '==============================='
-    for (key,value) in results.iteritems():
-        print 'TestName:%s \t Time:%f sec' % (key, value)
+    print 'Average compute_node_get_all time:%f sec' % total_time / CONF.total
 
 
 if __name__ == '__main__':
