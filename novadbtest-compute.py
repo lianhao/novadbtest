@@ -54,6 +54,7 @@ import copy
 import os
 import random
 import sys
+import signal
 import tempfile
 from multiprocessing import Process
 
@@ -70,6 +71,7 @@ from nova import conductor
 from nova import context
 from nova import config
 from nova import db
+from nova.openstack.common import importutils
 from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import periodic_task
@@ -78,7 +80,7 @@ from nova import utils
 
 import sqlalchemy.engine
 
-
+rpc = importutils.try_import('nova.openstack.common.rpc')
 CONF = cfg.CONF
 CONF.import_opt('connection',
                 'nova.openstack.common.db.sqlalchemy.session', group='database')
@@ -96,11 +98,17 @@ cli_opts = [
                help='range of seconds to randomly delay when starting the'
                     ' periodic task scheduler to reduce stampeding.'
                     ' (Disable by setting to 0)'),
+    cfg.IntOpt('num_proc',
+               default=100,
+               help='how many subprocess to launch to mimic the nova-compute updates'),
     cfg.BoolOpt('join_stats',
                 default=False,
                 help='generate stats data for each compute node for DB join')
 ]
 CONF.register_cli_opts(cli_opts)
+
+
+PERIORICAL_INTERNVAL = 60
 
 
 def _init_db():
@@ -170,19 +178,23 @@ def mimic_compute_update(compute_node, values):
     service.wait()
 
 
-def mimic_update(compute_node, values, initial_delay):
-    PERIORICAL_INTERNVAL = 60
+def mimic_update(group_datas, initial_delay):
     conductor_api = conductor.API()
     if initial_delay:
         eventlet.sleep(initial_delay)
+    print "length %d" % len(group_datas)
     while True:
-        print("update_compute id %d" % compute_node['id'])
-        ctxt = context.get_admin_context()
-        if "service" in compute_node:
-            del compute_node['service']
-        compute_node = conductor_api.compute_node_update(
-            ctxt, compute_node, values, False)
-        eventlet.sleep(PERIORICAL_INTERNVAL)
+        length = len(group_datas)
+        for i in range(length):
+            (compute_node, values) = group_datas[i]
+            print("update_compute id %d" % compute_node['id'])
+            ctxt = context.get_admin_context()
+            if "service" in compute_node:
+                    del compute_node['service']
+            compute_node = conductor_api.compute_node_update(
+                    ctxt, compute_node, values, False)
+            group_datas[i] = (compute_node, values)
+        eventlet.sleep(PERIORICAL_INTERNVAL * 1.0/length)
 
 
 def _generate_stats(id_num):
@@ -195,14 +207,20 @@ def _generate_stats(id_num):
     return stats
 
 
+def _get_initial_delay():
+    if CONF.periodic_fuzzy_delay:
+        initial_delay = random.randint(0, CONF.periodic_fuzzy_delay)
+    else:
+        initial_delay = 0
+    return initial_delay
+
 def parepare_data(join_stats):
     _init_db()
     print "Starting prepare data in DB"
     ctx = context.get_admin_context()
-    i = 0
-    
     datas = []
-    while i < CONF.num_comp:
+    procs = []
+    for i in range(CONF.num_comp):
         if  i *100.0 % CONF.num_comp == 0:
             sys.stdout.write("prepared %d%% data\r" % (i * 100.0 / CONF.num_comp))
             sys.stdout.flush()
@@ -248,18 +266,18 @@ def parepare_data(join_stats):
         compute_ref = jsonutils.to_primitive(
                         db.compute_node_create(ctx, comp_values))
         LOG.info('Compute node record created for id %d', compute_ref['id'])
-        #datas.append((compute_ref, values))
+        datas.append((compute_ref, values))
         
         #prepare for the update process
-        if CONF.periodic_fuzzy_delay:
-            initial_delay = random.randint(0, CONF.periodic_fuzzy_delay)
-        else:
-            initial_delay = 0
-        initial_delay = 0
-        p = Process(target=mimic_update, args=(compute_ref, values, initial_delay))
-        p.daemon = True
-        datas.append(p)
-        i = i + 1
+        if len(datas) >= CONF.num_comp / CONF.num_proc:
+            p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
+            procs.append(p)
+            datas = []
+    #remaining data
+    if len(datas):
+        p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
+        procs.append(p)
+        datas = []
 
     '''
     # start thread to mimic compute node update DB
@@ -269,19 +287,52 @@ def parepare_data(join_stats):
         #comp_srv.start()
         eventlet.spawn(mimic_compute_update, ref, val)
     '''
-    for p in datas:
-        p.start()
     
     print "Finish preparing data in DB"
+    return procs
     
+
+class SignalExit(SystemExit):
+    def __init__(self, signo, exccode=1):
+        super(SignalExit, self).__init__(exccode)
+        self.signo = signo
+
+        
+def _handle_signal(signo, frame):
+    # Allow the process to be killed again and die from natural causes
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    raise SignalExit(signo)    
+
     
 def main():
     config.parse_args(sys.argv,['novadbtest.conf'])
     logging.setup("novadbtest")
-    parepare_data(CONF.join_stats)
+    procs = parepare_data(CONF.join_stats)
+    # start subprocess
+    for p in procs:
+        p.start()
     dummy = DummyService()
     dummy.start()
-    dummy.wait()
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+    try:
+        status = None
+        dummy.wait()
+    except SignalExit as exc:
+        signame = {signal.SIGTERM: 'SIGTERM',
+                   signal.SIGINT: 'SIGINT'}[exc.signo]
+        LOG.info('Caught %s, exiting', signame)
+        status = exc.code
+        for p in procs:
+            p.terminate()
+    except SystemExit as exc:
+        status = exc.code
+    finally:
+        if rpc:
+            rpc.cleanup()
+        dummy.stop()
+    return status
 
 
 if __name__ == '__main__':
