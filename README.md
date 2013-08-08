@@ -3,6 +3,8 @@ Internal test code for nova db joinload/json.
 Prerequess
 ------------
 
+First, you need to modify the /etc/security/limits.conf to enlarge the max number of open files 'nofile' for the rabbitmq user and the client, and restart the rabbitmq-server.
+
 To run this test, you must have a working nova code(from github master branch) installed on the machine, as well as the mysql.
 You then have to modify the novadbtest.conf file to set correct sql_connection option for this test.
 
