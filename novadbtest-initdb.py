@@ -13,6 +13,7 @@ from nova import context
 from nova import config
 from nova import db
 from nova.db import migration
+from nova.db.sqlalchemy.models import ComputeNode
 from nova.openstack.common import log as logging
 from nova.openstack.common import jsonutils
 from nova import utils
@@ -107,10 +108,10 @@ def generate_data():
             'running_vms': i,
             'disk_available_least': i,
             }
-        if not CONF.join_stats:
-            comp_values['cpu_info'] = jsonutils.dumps(_generate_stats(i))
-        else:
-            comp_values['cpu_info'] = jsonutils.dumps(_generate_stats(i))
+        comp_values['cpu_info'] = jsonutils.dumps(_generate_stats(i))
+        if hasattr(ComputeNode, 'metrics'):
+            comp_values['metrics'] = jsonutils.dumps(_generate_stats(i))
+        if CONF.join_stats:
             comp_values['stats'] = _generate_stats(i)
         compute_ref = jsonutils.to_primitive(
                         db.compute_node_create(ctx, comp_values))

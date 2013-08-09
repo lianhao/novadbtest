@@ -281,9 +281,13 @@ def main():
     procs = parepare_process()
 
     # start subprocess
-    for p in procs:
-        p.start()
-    print 'All %d subprocesses have been started' % len(procs)
+    length = len(procs)
+    for i in range(length):
+        if  i *100.0 % length == 0:
+            sys.stdout.write(" %d%% subprocess have been started\r" % (i * 100.0 / length))
+            sys.stdout.flush()
+        procs[i].start()
+    print 'All %d subprocesses have been started' % length
     dummy = DummyService()
     dummy.start()
     signal.signal(signal.SIGTERM, _handle_signal)

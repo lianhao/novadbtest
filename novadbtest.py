@@ -97,6 +97,8 @@ def do_get_compute_node():
     compute_nodes = db.compute_node_get_all(ctx)
     for node in compute_nodes:
         node['cpu_info'] = jsonutils.loads(node['cpu_info'])
+        if hasattr(node, 'metrics'):
+            node['metrics'] = jsonutils.loads(node['metrics'] or jsonutils.dumps(''))
 
     return {'num_comp': len(compute_nodes),
             'num_stat': len(compute_nodes[0]['cpu_info']),
