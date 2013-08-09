@@ -55,7 +55,7 @@ import time
 
 os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
 import eventlet
-eventlet.monkey_patch(os=False, thread=False)
+eventlet.monkey_patch(os=False)
 
 from oslo.config import cfg
 
@@ -78,9 +78,6 @@ cli_opts = [
     cfg.IntOpt('total',
                default=100,
                help='number of runs'),
-    cfg.BoolOpt('join_stats',
-                default=False,
-                help='generate stats data for each compute node for DB join')
 ]
 CONF.register_cli_opts(cli_opts)
 
@@ -95,30 +92,32 @@ def timing(f):
 
 
 @timing
-def do_get_compute_node(join_stats):
+def do_get_compute_node():
     ctx = context.get_admin_context()
     compute_nodes = db.compute_node_get_all(ctx)
     for node in compute_nodes:
         node['cpu_info'] = jsonutils.loads(node['cpu_info'])
-        if join_stats:
-            stats = node.get('stats',{})
-            assert(not stats)
-            
-    return len(compute_nodes)
+
+    return {'num_comp': len(compute_nodes),
+            'num_stat': len(compute_nodes[0]['cpu_info']),
+            'join_stats': len(compute_nodes[0].get('stats', [])) > 0
+           }
 
 
-def test_main(join_stats, results,total):
+def test_main(results,total):
     i = 0
     total_elapse = 0
+    info = {}
     while i<total:       
-        (ret, elapse_time) = do_get_compute_node(join_stats)
+        (info, elapse_time) = do_get_compute_node()
         i += 1
-        print "Finish round %d in  %f seconds(ret: %d)\n" % (i, elapse_time, ret)
+        print "Finish round %d in  %f seconds (num of nodes: %d, num of stats: %d, join_stats: %s)" % (i, elapse_time,
+               info['num_comp'], info['num_stat'], info['join_stats'])
         total_elapse += elapse_time
         #time.sleep(0.5)
         eventlet.sleep(0.5)
 
-    return total_elapse
+    return (info, total_elapse)
 
 def main():
     config.parse_args(sys.argv,['novadbtest.conf'])
@@ -127,12 +126,14 @@ def main():
                'rounds': 0
                }
     #test_main(False, 'JOINLOAD', results)
-    total_time = test_main(CONF.join_stats, results, CONF.total)
+    (info, total_time) = test_main(results, CONF.total)
     print '============Summary============'
-    print '# total: %d' % CONF.total
-    print '# join_stats: %s' % str(CONF.join_stats)
+    print 'total run:  %d' % CONF.total
+    print '# num_comp: %d' % info.get('num_comp', 0)
+    print '# num_stat: %d' % info.get('num_stat', 0)
+    print '# join_stats: %s' % info.get('join_stats', False)
     print '==============================='
-    print 'Average compute_node_get_all time:%f sec' % (total_time / CONF.total)
+    print 'Average time of compute_node_get_all(): %f seconds' % (total_time / CONF.total)
 
 
 if __name__ == '__main__':

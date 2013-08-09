@@ -12,15 +12,7 @@ Usage
 ------------
 1) Create the DB tables if hasn't been done:
 
-    ./novadbtest-initdb.py
-
-2) Start the nova-conductor service using the config file novadbtest.conf:
-
-    nova-conductor --config-file ./novadbtest.conf
-
-3) Start to mimic nova_compute service to create compute nodes in DB and mimic the periodic updates:
-
-    ./novadbtest-compute.py [options]
+    ./novadbtest-initdb.py [options]
 
 Options:
 
@@ -33,17 +25,38 @@ Options:
   --join_stats <True or False>: Whether to generate stats data for each compute node for DB join.
                                 Default is False.
 
-  --num_proc NUM_PROC:          How many subprocess to launch to mimic the nova-compute updates.
-                                Each subprocess will update the number of num_comp/num_proc compute nodes
-                                at a periodic interval of 60/num_proc seconds.
+2) Start the nova-conductor service using the config file novadbtest.conf:
+
+    nova-conductor --config-file ./novadbtest.conf
+
+3) Start to mimic nova_compute service to create compute nodes in DB and mimic the periodic updates.
+
+    ./novadbtest-compute.py [options]
+
+Options:  
+
+  --num NUM:	                How many compute nodes to udpate, 0 means all. Default is 0.
+
+  --num_proc NUM_PROC:          Maximum subprocess allowed to launch to mimic the nova-compute updates.
+                                Each subprocess will update the number of NUM/NUM_PROC compute nodes
+                                at a periodic interval of 60/NUM_PROC seconds. Default is 100.
+
+  --start START:                Skip the first num of START compute nodes for updating, 0 means no skip.
+                                Default is 0.
+
+  --periodic_fuzzy_delay PERIODIC_FUZZY_DELAY:
+                                Range of seconds to randomly delay when starting the periodic task to
+                                reduce stampeding. Default is 60. (Disable by setting to 0)
+
 
 4) Test the performance of compute_node_get_all() call.
 
     ./novadbtest.py [options]
 
 Options:
-
-  --join_stats <True or False>: This should be the same as the one specified in novadbtest-compute.
   
-  --total TOTAL:                Number of runs.
-    
+  --total TOTAL:                Number of run.
+
+
+We can have several nova-conductor and novadbtest-compute.py on different machines for scale out test, 
+as long as we have the correct settings in the novadbtest.conf configuration file.

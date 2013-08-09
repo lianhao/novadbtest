@@ -55,7 +55,6 @@ import os
 import random
 import sys
 import signal
-import tempfile
 from multiprocessing import Process
 
 os.environ['EVENTLET_NO_GREENDNS'] = 'yes'
@@ -76,9 +75,6 @@ from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import periodic_task
 from nova.openstack.common import service
-from nova import utils
-
-import sqlalchemy.engine
 
 rpc = importutils.try_import('nova.openstack.common.rpc')
 CONF = cfg.CONF
@@ -87,43 +83,28 @@ CONF.import_opt('connection',
 LOG = logging.getLogger(__name__)
 
 cli_opts = [
-    cfg.IntOpt('num_comp',
-               default=10000,
-               help='number of compute nodes'),
-    cfg.IntOpt('num_stat',
-               default=20,
-               help='number of stats record for each compute node.'
-                    'If join_stats is False, these stats will be stored as json'
-                    'encoded TEXT in the cpu_info column'),
     cfg.IntOpt('periodic_fuzzy_delay',
                default=60,
                help='range of seconds to randomly delay when starting the'
-                    ' periodic task scheduler to reduce stampeding.'
+                    ' periodic task to reduce stampeding.'
                     ' (Disable by setting to 0)'),
     cfg.IntOpt('num_proc',
                default=100,
-               help='how many subprocess to launch to mimic the nova-compute updates.'
-                    'each subprocess will update num_comp/num_proc number of compute nodes'
+               help='maximum allowed subprocess to launch to mimic the nova-compute updates.'
+                    'each subprocess will update num/num_proc number of compute nodes'
                     'at a periodic interval of 60/num_proc'),
-    cfg.BoolOpt('join_stats',
-                default=False,
-                help='generate stats data for each compute node for DB join')
+    cfg.IntOpt('start',
+               default=0,
+               help='how many compute nodes to skip for udpate.'),
+    cfg.IntOpt('num',
+               default=0,
+               help='how many compute nodes to udpate, 0 means all'),
 ]
 CONF.register_cli_opts(cli_opts)
 
 
 PERIORICAL_INTERNVAL = 60
 
-
-def _init_db():
-    # cleaning tables DB
-    url=sqlalchemy.engine.url.make_url(CONF.database.connection)
-    fd, path = tempfile.mkstemp()
-    with os.fdopen(fd, "w") as f:
-        f.write('mysql -u%s -p%s -h%s -e "use %s; delete from compute_nodes; delete from compute_node_stats"\n' % (
-                 url.username, url.password, url.host, url.database))
-    utils.execute('sh', '%s' % path)
-    os.remove(path)
 
 '''
 class MimicComputeManger(periodic_task.PeriodicTasks):
@@ -190,24 +171,14 @@ def mimic_update(group_datas, initial_delay):
         length = len(group_datas)
         for i in range(length):
             (compute_node, values) = group_datas[i]
-            LOG.info("update_compute id %d",compute_node['id'])
+            LOG.debug("update_compute id %d",compute_node['id'])
             ctxt = context.get_admin_context()
             if "service" in compute_node:
                     del compute_node['service']
             compute_node = conductor_api.compute_node_update(
-                    ctxt, compute_node, values, False)
+                    ctxt, compute_node, values, True)
             group_datas[i] = (compute_node, values)
         eventlet.sleep(PERIORICAL_INTERNVAL * 1.0/length)
-
-
-def _generate_stats(id_num):
-    stats = {}
-    i = 0
-    while i < CONF.num_stat:
-        key = 'key%d' % i
-        stats[key] = id_num + i
-        i = i + 1
-    return stats
 
 
 def _get_initial_delay():
@@ -218,62 +189,49 @@ def _get_initial_delay():
     return initial_delay
 
 
-def parepare_data(join_stats):
-    _init_db()
-    print "Starting prepare data in DB"
-    ctx = context.get_admin_context()
+def parepare_process():
+
+    def _statmap(stats):
+        return dict((st['key'], st['value']) for st in stats)
+
     datas = []
     procs = []
-    for i in range(CONF.num_comp):
-        if  i *100.0 % CONF.num_comp == 0:
-            sys.stdout.write("prepared %d%% data\r" % (i * 100.0 / CONF.num_comp))
-            sys.stdout.flush()
-        svc_values = {
-            'host': 'host-%d' % i,
-            'binary': 'novadbtest',
-            'topic': 'novadbtest',
-            'report_count': 0,
-        }
-        #created service record
-        service_ref = jsonutils.to_primitive(
-                           db.service_get_by_host_and_topic(ctx, 
-                                                            svc_values['host'],
-                                                            svc_values['topic']))
-        if not service_ref:
-            service_ref = jsonutils.to_primitive(
-                               db.service_create(ctx, svc_values))
-        LOG.info('Service record created for id %d', service_ref['id'])
-        #create compute node record
-        comp_values = {
-            'service_id': service_ref['id'],
-            'vcpus': i,
-            'memory_mb': i,
-            'local_gb': i,
-            'vcpus_used': i,
-            'memory_mb_used': i,
-            'local_gb_used': i,
-            'hypervisor_type': 'qemu',
-            'hypervisor_version': 1,
-            'hypervisor_hostname': 'test',
-            'free_ram_mb': i,
-            'free_disk_gb': i,
-            'current_workload': i,
-            'running_vms': i,
-            'disk_available_least': i,
-            }
-        if not join_stats:
-            comp_values['cpu_info'] = jsonutils.dumps(_generate_stats(i))
-        else:
-            comp_values['cpu_info'] = jsonutils.dumps('')
-            comp_values['stats'] = _generate_stats(i)
-        values = copy.deepcopy(comp_values)
-        compute_ref = jsonutils.to_primitive(
-                        db.compute_node_create(ctx, comp_values))
-        LOG.info('Compute node record created for id %d', compute_ref['id'])
+    ctx = context.get_admin_context()
+    all_compute_nodes = jsonutils.to_primitive(db.compute_node_get_all(ctx))
+    total = len(all_compute_nodes)
+    start = CONF.start
+    num = CONF.num
+    if num <= 0:
+        num = total
+    num -= start
+
+    if total < 1:
+        print "No compute nodes found"
+        sys.exit(-1)
+
+    print "# of compute nodes total:    %d" % total
+    print "# of compute nodes to update:   %d" % num
+    print "# of stat for each node:     %d" % len(jsonutils.loads(all_compute_nodes[0]['cpu_info']))
+    print "Using JOIN:                  %s" % str(len(all_compute_nodes[0]['stats']) > 0)
+
+    for compute_ref in sorted(all_compute_nodes, key=lambda node: node['id']):
+        if start > 0:
+            start -= 1
+            continue
+        values = copy.deepcopy(compute_ref)
+        if "service" in values:
+            del values['service']
+        if "id" in values:
+            del values['id']
+        #convert stats
+        stats = values.get('stats', [])
+        statmap = _statmap(stats)
+        values['stats'] = statmap
+
         datas.append((compute_ref, values))
-        
+
         #prepare for the update process
-        if len(datas) >= CONF.num_comp / CONF.num_proc:
+        if len(datas) >= num / CONF.num_proc and len(procs) < CONF.num_proc - 1:
             p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
             procs.append(p)
             datas = []
@@ -291,8 +249,6 @@ def parepare_data(join_stats):
         #comp_srv.start()
         eventlet.spawn(mimic_compute_update, ref, val)
     '''
-    
-    print "Finish preparing data in DB"
     return procs
     
 
@@ -312,11 +268,11 @@ def _handle_signal(signo, frame):
 def main():
     config.parse_args(sys.argv,['novadbtest.conf'])
     logging.setup("novadbtest")
-    procs = parepare_data(CONF.join_stats)
+    procs = parepare_process()
     # start subprocess
     for p in procs:
         p.start()
-    print 'All %d subprocesses have been started' % CONF.num_proc
+    print 'All %d subprocesses have been started' % len(procs)
     dummy = DummyService()
     dummy.start()
     signal.signal(signal.SIGTERM, _handle_signal)
