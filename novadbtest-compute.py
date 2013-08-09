@@ -90,7 +90,7 @@ cli_opts = [
                     ' (Disable by setting to 0)'),
     cfg.IntOpt('num_proc',
                default=100,
-               help='maximum allowed subprocess to launch to mimic the nova-compute updates.'
+               help='number of subprocess to launch to mimic the nova-compute updates.'
                     'each subprocess will update num/num_proc number of compute nodes'
                     'at a periodic interval of 60/num_proc'),
     cfg.IntOpt('start',
@@ -211,6 +211,7 @@ def parepare_process():
         num = total
     if start <= 0:
         start = 0
+    maximum_data = num / CONF.num_proc or 1
         
     print "# of compute nodes total:    %d" % total
     print "# of compute nodes to update:   %d" % num
@@ -234,13 +235,17 @@ def parepare_process():
         datas.append((compute_ref, values))
 
         #prepare for the update process
-        if len(datas) >= num / CONF.num_proc and len(procs) < CONF.num_proc - 1:
-            p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
+        if len(datas) == maximum_data and len(procs) < CONF.num_proc - 1:
+            initial_delay = _get_initial_delay()
+            p = Process(target=mimic_update, args=(copy.deepcopy(datas), initial_delay))
             procs.append(p)
+            LOG.debug("Prepare new subprocess for %d nodes, initial_dealy %d", len(datas), initial_delay)
             datas = []
     #remaining data
     if len(datas):
-        p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
+        initial_delay = _get_initial_delay()
+        p = Process(target=mimic_update, args=(copy.deepcopy(datas), initial_delay))
+        LOG.debug("Prepare new subprocess for %d nodes, initial_dealy %d", len(datas), initial_delay)
         procs.append(p)
         datas = []
         

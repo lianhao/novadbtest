@@ -37,7 +37,7 @@ Options:
 
   --num NUM:	                How many compute nodes to udpate, 0 means all. Default is 0.
 
-  --num_proc NUM_PROC:          Maximum subprocess allowed to launch to mimic the nova-compute updates.
+  --num_proc NUM_PROC:          Number of subprocesses to launch to mimic the nova-compute updates.
                                 Each subprocess will update the number of NUM/NUM_PROC compute nodes
                                 at a periodic interval of 60/NUM_PROC seconds. Default is 100.
 
