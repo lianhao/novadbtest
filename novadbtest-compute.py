@@ -198,26 +198,29 @@ def parepare_process():
     procs = []
     ctx = context.get_admin_context()
     all_compute_nodes = jsonutils.to_primitive(db.compute_node_get_all(ctx))
-    total = len(all_compute_nodes)
-    start = CONF.start
-    num = CONF.num
-    if num <= 0:
-        num = total
-    num -= start
+    sorted_compute_nodes = sorted(all_compute_nodes, key=lambda node: node['id'])
+    total = len(sorted_compute_nodes)
 
     if total < 1:
         print "No compute nodes found"
         sys.exit(-1)
-
+    
+    start = CONF.start
+    num = CONF.num
+    if num <= 0 or num > total:
+        num = total
+    if start <= 0:
+        start = 0
+        
     print "# of compute nodes total:    %d" % total
     print "# of compute nodes to update:   %d" % num
     print "# of stat for each node:     %d" % len(jsonutils.loads(all_compute_nodes[0]['cpu_info']))
     print "Using JOIN:                  %s" % str(len(all_compute_nodes[0]['stats']) > 0)
 
-    for compute_ref in sorted(all_compute_nodes, key=lambda node: node['id']):
-        if start > 0:
-            start -= 1
-            continue
+    for i in range(num):
+        if start + i > total:
+            break
+        compute_ref = sorted_compute_nodes[start + i]
         values = copy.deepcopy(compute_ref)
         if "service" in values:
             del values['service']
@@ -240,6 +243,7 @@ def parepare_process():
         p = Process(target=mimic_update, args=(copy.deepcopy(datas), _get_initial_delay()))
         procs.append(p)
         datas = []
+        
 
     '''
     # start thread to mimic compute node update DB
@@ -268,7 +272,9 @@ def _handle_signal(signo, frame):
 def main():
     config.parse_args(sys.argv,['novadbtest.conf'])
     logging.setup("novadbtest")
+
     procs = parepare_process()
+
     # start subprocess
     for p in procs:
         p.start()
