@@ -58,5 +58,8 @@ Options:
   --total TOTAL:                Number of run.
 
 
+NOTE
+------------
+
 We can have several nova-conductor and novadbtest-compute.py on different machines for scale out test, 
 as long as we have the correct settings in the novadbtest.conf configuration file.
