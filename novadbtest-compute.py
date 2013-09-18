@@ -175,7 +175,7 @@ def mimic_update(group_datas, initial_delay):
             ctxt = context.get_admin_context()
             if "service" in compute_node:
                     del compute_node['service']
-            print values
+            #print values
             compute_node = conductor_api.compute_node_update(
                     ctxt, compute_node, values, True)
             group_datas[i] = (compute_node, values)
