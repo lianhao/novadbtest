@@ -175,6 +175,7 @@ def mimic_update(group_datas, initial_delay):
             ctxt = context.get_admin_context()
             if "service" in compute_node:
                     del compute_node['service']
+            print values
             compute_node = conductor_api.compute_node_update(
                     ctxt, compute_node, values, True)
             group_datas[i] = (compute_node, values)
@@ -216,7 +217,7 @@ def parepare_process():
     print "# of compute nodes total:    %d" % total
     print "# of compute nodes to update:   %d" % num
     print "# of stat for each node:     %d" % len(jsonutils.loads(all_compute_nodes[0]['cpu_info']))
-    print "Using JOIN:                  %s" % str(len(all_compute_nodes[0]['stats']) > 0)
+    print "Using JOIN:                  %s" % str(len(all_compute_nodes[0].get('stats', []) > 0)
 
     for i in range(num):
         if start + i > total:
